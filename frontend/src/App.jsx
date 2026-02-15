@@ -1,153 +1,144 @@
 import { useState, useEffect } from 'react'
-import './App.css'
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, onValue } from 'firebase/database';
+import { getDatabase, ref, onValue, update } from 'firebase/database';
+import './App.css'
 
-// Replace with the config provided by your friend
 const firebaseConfig = {
   apiKey: "AIzaSyA1OLI7p_E9mPQpKRrU5vG-gOeaV53lhIM",
   authDomain: "survivalsense-a48fe.firebaseapp.com",
   databaseURL: "https://survivalsense-a48fe-default-rtdb.firebaseio.com",
-  projectId: "survivalsense-a48fe",
-  storageBucket: "survivalsense-a48fe.firebasestorage.app",
-  messagingSenderId: "80781712015",
-  appId: "1:80781712015:web:ac6708f703295693ea6efa"
+  projectId: "survivalsense-a48fe"
 };
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
 function App() {
-  const [status, setStatus] = useState({
-    image_url: null,
-    analysis: "SYSTEM ONLINE - WAITING FOR DATA...",
-    status_color: "white",
-    timestamp: 0
-  })
+  const [status, setStatus] = useState({ 
+    image_url: null, analysis: "Initializing...", threat_level: 0, 
+    status_color: "#00ff00", temp: 0, gas: 0, humidity: 0, battery: 100, timestamp: 0 
+  });
+  const [mapData, setMapData] = useState({});
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [audioContext, setAudioContext] = useState(null);
 
-  const [systemActive, setSystemActive] = useState(false)
+  // Derive UI colors based on threat level (>5) or simulation
+  const isHighThreat = status.threat_level > 5 || status.status_color === "red";
+  const uiThemeColor = isHighThreat ? "#ff0000" : "#00ff00";
+  const uiTint = isHighThreat ? "rgba(40, 0, 0, 0.95)" : "rgba(0, 15, 0, 0.95)";
 
-  // --- SCI-FI ALARM SOUND ---
-const playAlarm = () => {
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      
-      // We will create two pulses
-      const createPulse = (startTime, frequency) => {
-        const oscillator = audioCtx.createOscillator();
-        const gainNode = audioCtx.createGain();
+  useEffect(() => {
+    const initAudio = () => { if (!audioContext) setAudioContext(new (window.AudioContext || window.webkitAudioContext)()); };
+    document.addEventListener('click', initAudio, { once: true });
+    return () => document.removeEventListener('click', initAudio);
+  }, [audioContext]);
 
-        oscillator.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
-
-        // 'square' sounds like a retro alarm, 'sawtooth' sounds like a modern siren
-        oscillator.type = 'square'; 
-        
-        // Frequency Sweep (High to Low)
-        // oscillator.frequency.setValueAtTime(frequency, startTime);
-        // oscillator.frequency.exponentialRampToValueAtTime(frequency / 2, startTime + 0.3);
-        // High-low alternating siren
-        oscillator.frequency.setValueAtTime(900, audioCtx.currentTime);
-        oscillator.frequency.setValueAtTime(600, audioCtx.currentTime + 1);
-        // Play for 0.5 seconds total
-
-        // Volume Envelope (Fade out)
-        gainNode.gain.setValueAtTime(0.3, startTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + 0.3);
-
-        oscillator.start(startTime);
-        oscillator.stop(startTime + 0.3);
-      };
-
-      // Play a double pulse (BEEP-BEEP)
-      createPulse(audioCtx.currentTime, 880);      // First beep (Note A5)
-      createPulse(audioCtx.currentTime + 0.4, 880); // Second beep 0.4s later
-      
-    } catch (e) {
-      console.error("Audio failed", e);
-    }
+  const playAlarm = () => {
+    if (!audioContext) return;
+    const now = audioContext.currentTime;
+    [0, 0.2, 0.4].forEach(t => {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      osc.connect(gain); gain.connect(audioContext.destination);
+      osc.type = 'square'; osc.frequency.value = 800;
+      gain.gain.setValueAtTime(0.3, now + t);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + t + 0.15);
+      osc.start(now + t); osc.stop(now + t + 0.15);
+    });
   };
 
-  // --- POLLING LOGIC ---
-  // useEffect(() => {
-  //   const interval = setInterval(() => {
-  //     // Use your Laptop's IP
-  //     fetch('http://100.67.151.18:5000/api/status')
-  //       .then(response => response.json())
-  //       .then(data => {
-  //         if (data.timestamp > status.timestamp) {
-  //           setStatus(data);
-            
-  //           // Trigger Alarm if system is active and color is red
-  //           if (systemActive && (data.status_color === "#ff0000" || data.status_color === "red")) {
-  //             playAlarm();
-  //           }
-  //         }
-  //       })
-  //       .catch(error => console.error("Error connecting to Flask:", error))
-  //   }, 1000)
-
-  //   return () => clearInterval(interval)
-  // }, [status.timestamp, systemActive])
-  // --- REAL-TIME DATABASE LISTENER ---
   useEffect(() => {
-    // Reference the specific path where your sensor data lives (e.g., 'sensor_data')
-    const statusRef = ref(db, 'sensor_data');
-
-    // onValue attaches a listener that fires immediately and then on every change
-    const unsubscribe = onValue(statusRef, (snapshot) => {
-      const data = snapshot.val();
+    onValue(ref(db, 'sensor_data'), (s) => {
+      const data = s.val();
       if (data) {
-        // Update local state with the cloud data
-        setStatus(data);
-        
-        // Trigger Alarm if system is active and color is red
-        if (systemActive && (data.status_color === "#ff0000" || data.status_color === "red")) {
-          playAlarm();
-        }
+        setStatus(prev => ({ ...prev, ...data }));
+        if (data.threat_level > 5) playAlarm(); // Trigger alarm on threat
       }
     });
+    onValue(ref(db, 'tactical_map'), (s) => setMapData(s.val() || {}));
+  }, [audioContext]);
 
-    // Cleanup: Remove the listener when the component unmounts
-    return () => unsubscribe();
-  }, [systemActive]); // Only re-run if systemActive changes
+  const handleToggle = async () => {
+    const nextState = !isSimulating;
+    setIsSimulating(nextState);
+    try {
+      if (nextState) {
+        playAlarm();
+        const updates = {};
+        Object.keys(mapData).forEach(k => { if (k !== 'ROVER_LATEST') updates[`tactical_map/${k}/status`] = 2; });
+        await update(ref(db), updates);
+        await update(ref(db, 'sensor_data'), { status_color: "red", threat_level: 10, analysis: "🚨 SIMULATED EMERGENCY ACTIVE" });
+      } else {
+        await update(ref(db, 'sensor_data'), { status_color: "#00ff00", threat_level: 0, analysis: "Normal scanning resumed." });
+      }
+    } catch (err) { console.error(err); }
+  };
+
+  // Inside the renderGrid function
+  const renderGrid = () => {
+    const rover = mapData.ROVER_LATEST || { lat: 43.6628, lon: -79.3958 };
+    const items = [];
+    
+    for (let r = -4; r <= 4; r++) {
+      for (let c = -7; c <= 7; c++) {
+        const key = `${Math.round(rover.lat / 0.0001) - r}_${Math.round(rover.lon / 0.0001) + c}`;
+        const cell = mapData[key];
+
+        // Check if this square is the AI's recommended path
+        const isTarget = status.target_square === key;
+
+        items.push(
+          <div 
+            key={key} 
+            className={`grid-box status-${cell?.status || 0} 
+              ${r === 0 && c === 0 ? 'rover' : ''} 
+              ${isTarget ? 'ai-target' : ''}`} // Add the target class
+            onClick={() => setSelectedCell(cell)}
+          >
+            {r === 0 && c === 0 ? '🤖' : isTarget ? '🎯' : ''}
+          </div>
+        );
+      }
+    }
+    return items;
+  };
 
   return (
-    <div className="hud-container" style={{ borderColor: status.status_color }}>
-      {!systemActive && (
-        <button className="start-btn" onClick={() => setSystemActive(true)}>
-          INITIALIZE AUDIO SYSTEM
-        </button>
+    <div className="hud-container" style={{ "--primary-glow": uiThemeColor, "--danger-tint": uiTint, borderColor: "var(--primary-glow)" }}>
+      <div className="main-branding" style={{ background: uiThemeColor }}>
+        <h1>RoverWatch: MakeUofT2026</h1>
+        <div className="toggle-container">
+          <span className="toggle-label">SIM DANGER</span>
+          <label className="switch">
+            <input type="checkbox" checked={isSimulating} onChange={handleToggle} /><span className="slider round"></span>
+          </label>
+        </div>
+      </div>
+      <div className="top-bar">
+        <span>Time: {new Date().toLocaleTimeString()}</span>
+        <span style={{ color: uiThemeColor, fontWeight: 'bold' }}>Threat: {status.threat_level}/10</span>
+        <span>Battery: {status.battery}%</span>
+      </div>
+      <div className="analysis-strip">
+         <span className="label">RoverWatch Analysis</span>
+         <div className="value">{status.analysis}</div>
+      </div>
+      <div className="main-content-layout">
+        <div className="left-panel"><div className="live-feed">{status.image_url ? <img src={status.image_url} className="scan-image" alt="Feed" /> : <div className="placeholder">Searching...</div>}</div></div>
+        <div className="right-panel"><h3 className="panel-title">Tactical Radar</h3><div className="grid-mesh">{renderGrid()}</div></div>
+      </div>
+      {selectedCell && (
+        <div className="modal" onClick={() => setSelectedCell(null)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <h4>{selectedCell.isRover ? "🤖 LIVE DATA" : "📍 SECTOR LOG"}</h4>
+            <div className="data-row">🌡️ TEMP: {selectedCell.temp}°C | 🌫️ GAS: {selectedCell.gas}</div>
+            <p className="ai-note">🧠 AI: {selectedCell.isRover ? status.analysis : selectedCell.analysis}</p>
+            <button className="close-btn" onClick={() => setSelectedCell(null)}>CLOSE</button>
+          </div>
+        </div>
       )}
-
-      <h1 className="glitch-text">SURVIVAL HEADBAND: MAKEUofT</h1>
-      <h2>Abrar, Arnob, Jawwad, Nisarg</h2>
-      
-      <div className="live-feed">
-        {status.image_url ? (
-          <img 
-            key={status.timestamp} // Forces image refresh
-            src={status.image_url} 
-            alt="Live Feed" 
-            className="scan-image"
-          />
-        ) : (
-          <div className="placeholder">NO SIGNAL</div>
-        )}
-      </div>
-
-      <div 
-        className="analysis-box"
-        style={{ color: status.status_color, borderColor: status.status_color }}
-      >
-        {status.analysis.toUpperCase()}
-      </div>
-
-      <p className="system-status">
-        ● {systemActive ? "AUDIO READY" : "AUDIO MUTED"} | CONNECTED
-      </p>
     </div>
-  )
+  );
 }
-
-export default App
+export default App;

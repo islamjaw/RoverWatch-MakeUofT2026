@@ -1,5 +1,19 @@
-node_modules/
-frontend/node_modules/
-backend/serviceAccountKey.json
-venv/
+
+# Secret Keys
+serviceAccountKey.json
 .env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+
+# Data & Logs
+static/uploads/scan_*.jpg
+mission_log.json
+
+# OS files
+.DS_Store
+Thumbs.db
